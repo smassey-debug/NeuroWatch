@@ -25,6 +25,69 @@ from sklearn.metrics import classification_report, confusion_matrix
 import warnings
 warnings.filterwarnings("ignore")
 
+# ── Kaggle auto-download for Streamlit Cloud deployment ───────────────────────
+import subprocess
+import sys
+import zipfile
+
+WESAD_PATH = "/tmp/wesad/WESAD"
+
+def download_wesad():
+    """Download and extract WESAD dataset from Kaggle if not already present."""
+    if os.path.exists(WESAD_PATH):
+        return True, "Dataset already downloaded."
+
+    # Check Kaggle credentials exist (set via Streamlit secrets)
+    kaggle_user = os.environ.get("KAGGLE_USERNAME", "")
+    kaggle_key  = os.environ.get("KAGGLE_KEY", "")
+
+    if not kaggle_user or not kaggle_key:
+        return False, (
+            "Kaggle credentials not found. "
+            "Add KAGGLE_USERNAME and KAGGLE_KEY to Streamlit secrets."
+        )
+
+    try:
+        # Install kaggle package silently
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "kaggle", "-q"],
+            check=True, capture_output=True
+        )
+
+        # Set credentials as environment variables for the kaggle CLI
+        env = os.environ.copy()
+        env["KAGGLE_USERNAME"] = kaggle_user
+        env["KAGGLE_KEY"]      = kaggle_key
+
+        os.makedirs("/tmp/wesad", exist_ok=True)
+
+        # Download dataset
+        subprocess.run(
+            [
+                sys.executable, "-m", "kaggle", "datasets", "download",
+                "-d", "orvile/wesad-wearable-stress-affect-detection-dataset",
+                "-p", "/tmp/wesad",
+            ],
+            check=True, capture_output=True, env=env
+        )
+
+        # Extract zip
+        zip_path = "/tmp/wesad/wesad-wearable-stress-affect-detection-dataset.zip"
+        if os.path.exists(zip_path):
+            with zipfile.ZipFile(zip_path, "r") as z:
+                z.extractall("/tmp/wesad")
+            os.remove(zip_path)
+
+        if os.path.exists(WESAD_PATH):
+            return True, "✅ WESAD dataset downloaded successfully."
+        else:
+            return False, "Download completed but WESAD folder not found. Check dataset structure."
+
+    except subprocess.CalledProcessError as e:
+        return False, f"Download failed: {e.stderr.decode() if e.stderr else str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error during download: {str(e)}"
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="NeuroWatch — AI Patient Monitor",
@@ -608,9 +671,9 @@ FEATURES = [
 ]
 
 # ── Signal processing ─────────────────────────────────────────────────────────
-def bandpass_filter(signal, low, high, fs):
-    b, a = butter(2, [low/fs*2, high/fs*2], btype='band')
-    return filtfilt(b, a, signal)
+def bandpass_filter(sig, low, high, fs):
+    b, a = butter(2, [low / (fs * 0.5), high / (fs * 0.5)], btype='band')
+    return filtfilt(b, a, sig)
 
 def extract_ecg_features(ecg, fs=ECG_FS):
     peaks, _ = find_peaks(ecg, distance=fs*0.5)
@@ -810,12 +873,16 @@ def plot_timeseries(df, col, title, colour, ylabel):
 
 def plot_feature_importance(model):
     imp = pd.Series(model.feature_importances_, index=FEATURES).sort_values()
-    fig, ax = plt.subplots(figsize=(5, 3.5)); _dark(ax, fig)
-    colours = [ACCENT if v>imp.median() else GRID_COL for v in imp.values]
-    ax.barh(imp.index, imp.values, color=colours, edgecolor="none", height=0.6)
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    _dark(ax, fig)
+    imp_median = float(imp.median())
+    imp_vals = imp.values.tolist()
+    colours = [ACCENT if v > imp_median else GRID_COL for v in imp_vals]
+    ax.barh(imp.index, imp_vals, color=colours, edgecolor="none", height=0.6)
     ax.set_title("Feature Importance", fontsize=10, pad=8)
     ax.set_xlabel("Mean Decrease in Impurity", fontsize=8)
-    fig.tight_layout(); return fig
+    fig.tight_layout()
+    return fig
 
 def plot_confusion(cm):
     fig, ax = plt.subplots(figsize=(3.5, 3)); _dark(ax, fig)
@@ -859,8 +926,36 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("### ⚙️ Configuration")
-    base_path = st.text_input("WESAD Base Path", value="/content/wesad/WESAD")
-    load_btn  = st.button("🚀 Load Dataset & Train Model", use_container_width=True)
+
+    # Auto-detect deployment vs local
+    is_cloud = os.environ.get("KAGGLE_USERNAME", "") != ""
+
+    if is_cloud:
+        # On Streamlit Cloud — use fixed download path
+        base_path = WESAD_PATH
+        st.markdown(
+            "<div style='font-family:DM Mono,monospace;font-size:0.72rem;"
+            "color:#4A7FA5;margin-bottom:8px'>WESAD Path (auto)</div>",
+            unsafe_allow_html=True
+        )
+        st.code(base_path, language=None)
+
+        if not os.path.exists(WESAD_PATH):
+            if st.button("⬇️ Download WESAD Dataset", use_container_width=True):
+                with st.spinner("Downloading WESAD from Kaggle… this takes 1–2 minutes."):
+                    ok, msg = download_wesad()
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+                    st.stop()
+        else:
+            st.success("✅ WESAD dataset ready")
+    else:
+        # Local — let user type their own path
+        base_path = st.text_input("WESAD Base Path", value="/content/wesad/WESAD")
+
+    load_btn = st.button("🚀 Load Dataset & Train Model", use_container_width=True)
 
     st.markdown("---")
     st.markdown("### 🧪 Simulation")
@@ -910,20 +1005,31 @@ st.markdown("""
 # ═════════════════════════════════════════════════════════════════════════════
 
 if load_btn:
+    # If running on cloud and dataset not yet downloaded, download first
     if not os.path.exists(base_path):
-        st.error(f"Path not found: `{base_path}`")
-    else:
-        with st.spinner("Loading WESAD dataset and training model…"):
-            model, scaler, subjects, df_all, rpt, cm = load_and_train(base_path)
-            st.session_state.model   = model
-            st.session_state.scaler  = scaler
-            st.session_state.df_all  = df_all
-            st.session_state.report  = rpt
-            st.session_state.cm      = cm
-            st.session_state.loaded_subjects = subjects
-        log_action(st.session_state.user_id, st.session_state.username,
-                   "model_trained", f"{len(subjects)} subjects, {len(df_all)} windows")
-        st.success(f"✅ Model trained on {len(subjects)} subjects · {len(df_all)} windows")
+        if os.environ.get("KAGGLE_USERNAME", ""):
+            with st.spinner("Downloading WESAD dataset from Kaggle first…"):
+                ok, msg = download_wesad()
+            if not ok:
+                st.error(msg)
+                st.stop()
+            else:
+                st.success(msg)
+        else:
+            st.error(f"Path not found: `{base_path}` — Check your WESAD Base Path in the sidebar.")
+            st.stop()
+
+    with st.spinner("Loading WESAD dataset and training model…"):
+        model, scaler, subjects, df_all, rpt, cm = load_and_train(base_path)
+        st.session_state.model   = model
+        st.session_state.scaler  = scaler
+        st.session_state.df_all  = df_all
+        st.session_state.report  = rpt
+        st.session_state.cm      = cm
+        st.session_state.loaded_subjects = subjects
+    log_action(st.session_state.user_id, st.session_state.username,
+               "model_trained", f"{len(subjects)} subjects, {len(df_all)} windows")
+    st.success(f"✅ Model trained on {len(subjects)} subjects · {len(df_all)} windows")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TABS
@@ -1051,8 +1157,10 @@ with tab2:
     if st.session_state.model is None:
         st.info("Train the model first using the sidebar.")
     else:
-        rpt = st.session_state.report; cm = st.session_state.cm
-        r1  = rpt.get("1",{}); ra = rpt.get("accuracy",0)
+        rpt = st.session_state.report
+        cm = st.session_state.cm
+        r1 = rpt.get("1", {})
+        ra = float(rpt.get("accuracy", 0))
         st.markdown('<div class="section-title">Classification Performance</div>',
                     unsafe_allow_html=True)
         m1,m2,m3,m4 = st.columns(4)
