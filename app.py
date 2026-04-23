@@ -26,67 +26,121 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ── Kaggle auto-download for Streamlit Cloud deployment ───────────────────────
-import subprocess
-import sys
 import zipfile
+import urllib.request
+import json
+import base64
 
 WESAD_PATH = "/tmp/wesad/WESAD"
 
 def download_wesad():
-    """Download and extract WESAD dataset from Kaggle if not already present."""
+    """
+    Download and extract the WESAD dataset from Kaggle using their
+    REST API directly — no subprocess pip install required.
+    Works on Streamlit Cloud where runtime pip is blocked.
+    """
     if os.path.exists(WESAD_PATH):
         return True, "Dataset already downloaded."
 
-    # Check Kaggle credentials exist (set via Streamlit secrets)
+    # Pull credentials from Streamlit secrets → env vars
     kaggle_user = os.environ.get("KAGGLE_USERNAME", "")
     kaggle_key  = os.environ.get("KAGGLE_KEY", "")
 
     if not kaggle_user or not kaggle_key:
         return False, (
             "Kaggle credentials not found. "
-            "Add KAGGLE_USERNAME and KAGGLE_KEY to Streamlit secrets."
+            "Add KAGGLE_USERNAME and KAGGLE_KEY to Streamlit Cloud secrets."
         )
 
     try:
-        # Install kaggle package silently
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "kaggle", "-q"],
-            check=True, capture_output=True
-        )
-
-        # Set credentials as environment variables for the kaggle CLI
-        env = os.environ.copy()
-        env["KAGGLE_USERNAME"] = kaggle_user
-        env["KAGGLE_KEY"]      = kaggle_key
-
         os.makedirs("/tmp/wesad", exist_ok=True)
 
-        # Download dataset
-        subprocess.run(
-            [
-                sys.executable, "-m", "kaggle", "datasets", "download",
-                "-d", "orvile/wesad-wearable-stress-affect-detection-dataset",
-                "-p", "/tmp/wesad",
-            ],
-            check=True, capture_output=True, env=env
+        zip_path = "/tmp/wesad/wesad.zip"
+
+        # ── Kaggle dataset download API (no CLI needed) ───────────────────────
+        dataset_owner = "orvile"
+        dataset_name  = "wesad-wearable-stress-affect-detection-dataset"
+        api_url = (
+            f"https://www.kaggle.com/api/v1/datasets/download/"
+            f"{dataset_owner}/{dataset_name}"
         )
 
-        # Extract zip
-        zip_path = "/tmp/wesad/wesad-wearable-stress-affect-detection-dataset.zip"
-        if os.path.exists(zip_path):
-            with zipfile.ZipFile(zip_path, "r") as z:
-                z.extractall("/tmp/wesad")
-            os.remove(zip_path)
+        # Basic auth: base64(username:key)
+        credentials = base64.b64encode(
+            f"{kaggle_user}:{kaggle_key}".encode()
+        ).decode()
 
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "User-Agent":    "python-urllib",
+            }
+        )
+
+        # Stream download to disk (dataset is ~1 GB — stream in chunks)
+        with urllib.request.urlopen(req, timeout=300) as response:
+            total = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 1024 * 1024  # 1 MB chunks
+
+            with open(zip_path, "wb") as f:
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+        if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 1000:
+            return False, "Download produced an empty or invalid file. Check your Kaggle credentials."
+
+        # ── Extract zip ───────────────────────────────────────────────────────
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall("/tmp/wesad")
+        os.remove(zip_path)
+
+        # ── Verify extraction ─────────────────────────────────────────────────
         if os.path.exists(WESAD_PATH):
-            return True, "✅ WESAD dataset downloaded successfully."
-        else:
-            return False, "Download completed but WESAD folder not found. Check dataset structure."
+            return True, "✅ WESAD dataset downloaded and extracted successfully."
 
-    except subprocess.CalledProcessError as e:
-        return False, f"Download failed: {e.stderr.decode() if e.stderr else str(e)}"
+        # Some zips unpack with a nested folder — find it
+        for root, dirs, files in os.walk("/tmp/wesad"):
+            for d in dirs:
+                candidate = os.path.join(root, d, "WESAD")
+                if os.path.exists(candidate):
+                    import shutil
+                    shutil.move(candidate, WESAD_PATH)
+                    return True, "✅ WESAD dataset ready."
+
+        return False, (
+            "Extraction completed but WESAD folder not found inside the zip. "
+            "The dataset structure may have changed on Kaggle."
+        )
+
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return False, "Kaggle credentials are invalid. Check KAGGLE_USERNAME and KAGGLE_KEY in secrets."
+        if e.code == 403:
+            return False, "Access denied. Make sure you have accepted the dataset terms on Kaggle.com."
+        return False, f"HTTP error {e.code}: {e.reason}"
+    except urllib.error.URLError as e:
+        return False, f"Network error: {str(e.reason)}"
+    except zipfile.BadZipFile:
+        return False, "Downloaded file is not a valid zip. The Kaggle API may have returned an error page."
     except Exception as e:
-        return False, f"Unexpected error during download: {str(e)}"
+        return False, f"Unexpected error: {str(e)}"
+
+# ── Load Streamlit secrets into environment variables ─────────────────────────
+# This makes KAGGLE_USERNAME and KAGGLE_KEY available via os.environ
+# both locally (if set in .streamlit/secrets.toml) and on Streamlit Cloud
+try:
+    if "KAGGLE_USERNAME" in st.secrets:
+        os.environ["KAGGLE_USERNAME"] = st.secrets["KAGGLE_USERNAME"]
+    if "KAGGLE_KEY" in st.secrets:
+        os.environ["KAGGLE_KEY"] = st.secrets["KAGGLE_KEY"]
+except Exception:
+    pass  # secrets not configured — local mode, user sets path manually
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
