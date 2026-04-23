@@ -1,0 +1,31 @@
+# NeuroWatch — Human–AI Hybrid Mental Health Monitoring System
+# Requirements File
+# Install with: pip install -r requirements.txt
+
+# ── Web Dashboard ─────────────────────────────────────────────────────────────
+streamlit>=1.27.0
+
+# ── Machine Learning ──────────────────────────────────────────────────────────
+scikit-learn>=1.3.0
+
+# ── Signal Processing ─────────────────────────────────────────────────────────
+scipy>=1.11.0
+
+# ── Data Handling ─────────────────────────────────────────────────────────────
+numpy>=1.24.0
+pandas>=2.0.0
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib>=3.7.0
+
+# ── Standard Library (no install needed — included with Python 3.9+) ──────────
+# sqlite3    — user authentication database
+# hashlib    — PBKDF2-HMAC-SHA256 password hashing
+# hmac       — timing-safe password comparison
+# secrets    — cryptographic salt generation
+# pickle     — WESAD .pkl file deserialisation
+# re         — input validation (email, username)
+# os         — filesystem operations
+# time       — report timestamps
+# datetime   — session logging timestamps
+# typing     — Tuple type hints (Python 3.9 compatibility)

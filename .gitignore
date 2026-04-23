@@ -1,0 +1,19 @@
+# Virtual environments
+.venv/
+.venv-1/
+
+# WESAD dataset (too large for GitHub)
+archive/
+archive.zip
+
+# SQLite database (resets on deploy anyway)
+neurowatch_users.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
